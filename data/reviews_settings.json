@@ -1,0 +1,44 @@
+{
+  "1554550139824242808": {
+    "channel_id": 1554550142873370717,
+    "moderation_channel_id": 1568275264469737472,
+    "submit_role_ids": [
+      1569402265209540729
+    ],
+    "moderator_role_ids": [
+      1568951228967166074
+    ],
+    "reviews": {
+      "415fc91baf9441abacd9c79e9415a83c": {
+        "id": "415fc91baf9441abacd9c79e9415a83c",
+        "author_id": 1025384048417325056,
+        "product": "MeersExternal",
+        "rating": 5,
+        "text": "Паста ахуенная,шизякович руки целовал",
+        "status": "approved",
+        "created_at": 1794251517.0588598,
+        "moderation_message_id": 1569429409251729429,
+        "moderator_id": 1025384048417325056,
+        "published_message_id": 1569429434212155414,
+        "decided_at": 1794251523.4588609
+      },
+      "9502b066d259423da3ed4d0a7078709a": {
+        "id": "9502b066d259423da3ed4d0a7078709a",
+        "author_id": 294111300114710528,
+        "product": "MeersExternal",
+        "rating": 2,
+        "text": "213213",
+        "status": "approved",
+        "created_at": 1794252711.0832782,
+        "moderation_message_id": 1569434417162616934,
+        "moderator_id": 294111300114710528,
+        "published_message_id": 1569434446321680556,
+        "decided_at": 1794252718.4393919
+      }
+    },
+    "last_reviews": {
+      "1025384048417325056": 1794251517.0588598,
+      "294111300114710528": 1794252711.0832782
+    }
+  }
+}
