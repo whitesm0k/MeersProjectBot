@@ -1,0 +1,1 @@
+Upload archive CONTENTS into bot root (next to bot.py), overwriting services/welcome_card.py and assets/welcome_background.png. Ensure fonts/*.ttf are present. Keep your existing secrets/config. Restart bot and run /welcome_test.
