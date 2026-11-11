@@ -1,14 +1,17 @@
 import logging
 import discord
 from discord.ext import commands
-from config import TOKEN, ROLE_UNVERIFIED_ID, ROLE_VERIFIED_ID
+from config import TOKEN, ROLE_UNVERIFIED_ID, ROLE_VERIFIED_ID, SPAM_LIMIT_PER_WINDOW, SPAM_WINDOW_SECONDS, OWNER_USER_IDS, OWNER_MENTION_TIMEOUT_SECONDS
 from cogs.tickets import TicketPanelView, TicketControls, PartnershipPanelView, SubscriptionView
 from cogs.reviews import ReviewPanel
 from cogs.vacancies import VacancyPanelView
 from cogs.reports import ReportPanelView, ReportVerifyView
 from cogs.verification import VerificationPanelView
 from security.antispam import SpamGuard
+from security.webhook_guard import WebhookGuard
 from security.audit_guard import AuditGuard
+from services.moderation import apply_timeout
+from services.logs import send_security_alert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +30,7 @@ class MeersBot(commands.Bot):
         intents.webhooks = True
         super().__init__(command_prefix="!", intents=intents)
         self.spam_guard = SpamGuard()
+        self.webhook_guard = WebhookGuard(self)
         self.audit_guard = AuditGuard(self)
 
     async def setup_hook(self):
@@ -61,16 +65,58 @@ bot = MeersBot()
 @bot.event
 async def on_ready():
     log.info("Бот онлайн: %s (%s)", bot.user, bot.user.id if bot.user else "?")
+    log.info("Anti-spam активен: %s сообщений / %s сек.; администраторы исключены", SPAM_LIMIT_PER_WINDOW, SPAM_WINDOW_SECONDS)
+    for guild in bot.guilds:
+        me = guild.me
+        if not me:
+            log.warning("Нет данных о правах бота на сервере %s", guild.id)
+            continue
+        permissions = me.guild_permissions
+        for name in ("manage_messages", "manage_webhooks", "moderate_members", "view_audit_log", "send_messages"):
+            if not getattr(permissions, name):
+                log.warning("Сервер %s: отсутствует разрешение %s", guild.id, name)
+        if not permissions.moderate_members:
+            log.warning("Сервер %s: тайм-ауты не будут работать", guild.id)
+    if not bot.intents.message_content or not bot.intents.members:
+        log.error("Message Content и Server Members intents обязательны")
 
 @bot.event
 async def on_message(message: discord.Message):
+    if message.guild and message.webhook_id:
+        try:
+            await bot.webhook_guard.check(message)
+        except Exception:
+            log.exception("Ошибка Webhook Anti-Raid в канале %s", message.channel.id)
+        return
     if message.guild and not message.author.bot and not message.webhook_id:
         member = message.author
         if isinstance(member, discord.Member) and not bot.spam_guard.is_exempt(member):
-            detected, reason = bot.spam_guard.check(message)
-            if detected:
-                await bot.spam_guard.handle(message, reason, bot)
-                return
+            try:
+                # Explicit user mentions only: replies, role pings and @everyone are not treated as owner mentions.
+                protected_ids = set(OWNER_USER_IDS)
+                protected_ids.add(message.guild.owner_id)
+                mentioned_ids = {user.id for user in message.mentions}
+                targeted = protected_ids & mentioned_ids
+                if targeted:
+                    reason = "Упоминание владельца сервера: " + ", ".join(str(i) for i in sorted(targeted))
+                    timed_out = await apply_timeout(member, OWNER_MENTION_TIMEOUT_SECONDS, reason, bot)
+                    try:
+                        await message.delete()
+                    except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                        log.warning("Не удалось удалить сообщение с упоминанием владельца: %s", exc)
+                    embed = discord.Embed(
+                        title="Упоминание владельца сервера",
+                        description=f"Участник: {member.mention} (`{member.id}`)\nКанал: {message.channel.mention}\nТайм-аут на 1 час: {'выдан' if timed_out else 'НЕ выдан (проверьте права)'}",
+                        color=discord.Color.red(), timestamp=discord.utils.utcnow()
+                    )
+                    await send_security_alert(bot, message.guild, embed=embed)
+                    return
+                detected, reason = bot.spam_guard.check(message)
+                if detected:
+                    await bot.spam_guard.handle(message, reason, bot)
+                    return
+            except Exception:
+                log.exception("Ошибка проверки Anti-spam в канале %s", message.channel.id)
     await bot.process_commands(message)
 
 @bot.event

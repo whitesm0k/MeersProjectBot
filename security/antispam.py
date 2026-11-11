@@ -1,4 +1,5 @@
 import re
+import logging
 import time
 from collections import defaultdict, deque
 import discord
@@ -11,12 +12,15 @@ from config import (
 )
 from services.permissions import is_admin
 from services.moderation import apply_timeout
-from services.logs import send_raid_log
+from services.logs import send_security_alert
+
+log = logging.getLogger("meersproject.security")
 
 class SpamGuard:
     def __init__(self):
         self.messages = defaultdict(deque)
         self.recent_texts = defaultdict(deque)
+        self.last_actions = {}
 
     def is_exempt(self, member: discord.Member) -> bool:
         return member.bot or is_admin(member)
@@ -54,7 +58,7 @@ class SpamGuard:
         previous = queue[-1] if queue else None
         queue.append(now)
 
-        if len(queue) > SPAM_LIMIT_PER_WINDOW:
+        if len(queue) >= max(2, SPAM_LIMIT_PER_WINDOW):
             return True, f"Превышен лимит сообщений: {len(queue)} за {SPAM_WINDOW_SECONDS} сек."
         normalized = ' '.join(text.casefold().split())
         if normalized and len(normalized) >= 8:
@@ -65,26 +69,34 @@ class SpamGuard:
             if sum(1 for _, value in recent if value == normalized) >= 3:
                 return True, "Повторение одинакового сообщения трижды"
         # One quick message is not sufficient evidence of spam.
-        if len(queue) >= 4 and queue[-1] - queue[-4] < 3 * SPAM_MIN_INTERVAL_SECONDS:
+        if len(queue) >= 4 and queue[-1] - queue[-4] <= 3 * SPAM_MIN_INTERVAL_SECONDS:
             return True, "Четыре сообщения отправлены слишком быстро"
         return False, ""
 
     async def handle(self, message: discord.Message, reason: str, bot):
+        member = message.author
+        key = (message.guild.id, member.id)
+        now = time.monotonic()
+        # Avoid repeatedly attempting a timeout and sending DMs for each message in a burst.
+        cooldown = now - self.last_actions.get(key, -1e12) < 15
         try:
             await message.delete()
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-            pass
-
-        member = message.author
+        except discord.Forbidden:
+            log.warning("Anti-spam: нет права Manage Messages в канале %s", message.channel.id)
+        except (discord.NotFound, discord.HTTPException) as exc:
+            log.warning("Anti-spam: не удалось удалить сообщение: %s", exc)
+        if cooldown:
+            return
+        self.last_actions[key] = now
         timed_out = await apply_timeout(member, SPAM_TIMEOUT_SECONDS, f"Anti-spam: {reason}", bot)
+        log.warning("Anti-spam: user=%s guild=%s reason=%s timeout=%s", member.id, message.guild.id, reason, timed_out)
         embed = discord.Embed(
             title="Обнаружен спам",
-            description=f"Участник: {member.mention} (`{member.id}`)\nПричина: {reason}\nТайм-аут: {'выдан' if timed_out else 'не удалось выдать'}",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow()
+            description=f"Участник: {member.mention} (`{member.id}`)\nПричина: {reason}\nТайм-аут: {'выдан' if timed_out else 'НЕ выдан — проверьте права и иерархию ролей'}",
+            color=discord.Color.red(), timestamp=discord.utils.utcnow()
         )
-        await send_raid_log(bot, embed=embed)
+        await send_security_alert(bot, message.guild, embed=embed)
         try:
-            await member.send(f"⚠️ Антиспам обнаружил подозрительную активность.\nПричина: {reason}\nТайм-аут: {SPAM_TIMEOUT_SECONDS} сек.")
+            await member.send(f"⚠️ Антиспам обнаружил подозрительную активность.\nПричина: {reason}\nТайм-аут: {'выдан' if timed_out else 'не выдан'}.")
         except (discord.Forbidden, discord.HTTPException):
             pass

@@ -1,14 +1,17 @@
 import time
+import logging
 from collections import defaultdict, deque
 import discord
 from config import (
     RAID_JOIN_FLOOD_WINDOW_SECONDS, RAID_JOIN_FLOOD_LIMIT,
     RAID_MAX_CHANNELS_PER_USER, RAID_MAX_ROLES_PER_USER,
-    AUTO_REVERT_RAID_ACTIONS
+    AUTO_REVERT_RAID_ACTIONS, RAID_ALERT_COOLDOWN_SECONDS
 )
 from services.permissions import is_admin
-from services.logs import send_raid_log
+from services.logs import send_security_alert
 from services.moderation import apply_timeout
+
+log = logging.getLogger("meersproject.security")
 
 class AuditGuard:
     """Audit-log based anti-raid detection. Automatic reversals are opt-in."""
@@ -18,6 +21,7 @@ class AuditGuard:
         self.channel_creations = defaultdict(deque)
         self.role_creations = defaultdict(deque)
         self.webhook_alerts = set()
+        self.join_alert_times = {}
 
     def _push(self, store, key, limit, window):
         now = time.monotonic()
@@ -45,13 +49,17 @@ class AuditGuard:
         count, detected = self._push(
             self.joins, member.guild.id, RAID_JOIN_FLOOD_LIMIT, RAID_JOIN_FLOOD_WINDOW_SECONDS
         )
-        if detected:
+        now = time.monotonic()
+        last = self.join_alert_times.get(member.guild.id, -1e12)
+        if detected and now - last >= RAID_ALERT_COOLDOWN_SECONDS:
+            self.join_alert_times[member.guild.id] = now
+            log.warning("Anti-raid: %s joins in guild %s", count, member.guild.id)
             embed = discord.Embed(
                 title="Возможный рейд: массовый вход",
                 description=f"За {RAID_JOIN_FLOOD_WINDOW_SECONDS} сек. вошло {count} участников.\nПоследний вход: {member.mention}",
                 color=discord.Color.red(), timestamp=discord.utils.utcnow()
             )
-            await send_raid_log(self.bot, embed=embed)
+            await send_security_alert(self.bot, member.guild, embed=embed)
             # Intentionally no automatic ban: a join burst alone is not proof of malicious intent.
 
     async def record_channel_create(self, channel):
@@ -63,7 +71,7 @@ class AuditGuard:
             RAID_MAX_CHANNELS_PER_USER, RAID_JOIN_FLOOD_WINDOW_SECONDS
         )
         if detected:
-            await send_raid_log(self.bot, text=f"⚠️ Возможный рейд: {actor.mention} создал(а) {count} каналов за {RAID_JOIN_FLOOD_WINDOW_SECONDS} сек.")
+            await send_security_alert(self.bot, channel.guild, text=f"⚠️ Возможный рейд: {actor.mention} создал(а) {count} каналов за {RAID_JOIN_FLOOD_WINDOW_SECONDS} сек.")
             if AUTO_REVERT_RAID_ACTIONS:
                 try:
                     await channel.delete(reason="Anti-raid: channel creation threshold exceeded")
@@ -82,7 +90,7 @@ class AuditGuard:
             RAID_MAX_ROLES_PER_USER, RAID_JOIN_FLOOD_WINDOW_SECONDS
         )
         if detected:
-            await send_raid_log(self.bot, text=f"⚠️ Возможный рейд: {actor.mention} создал(а) {count} ролей за {RAID_JOIN_FLOOD_WINDOW_SECONDS} сек.")
+            await send_security_alert(self.bot, role.guild, text=f"⚠️ Возможный рейд: {actor.mention} создал(а) {count} ролей за {RAID_JOIN_FLOOD_WINDOW_SECONDS} сек.")
             if AUTO_REVERT_RAID_ACTIONS:
                 try:
                     await role.delete(reason="Anti-raid: role creation threshold exceeded")
@@ -121,8 +129,8 @@ class AuditGuard:
         if key in self.webhook_alerts:
             return
         self.webhook_alerts.add(key)
-        await send_raid_log(
-            self.bot,
+        await send_security_alert(
+            self.bot, guild,
             text=f"⚠️ Создание вебхука: {actor.mention} в канале {channel.mention}. Проверьте аудит сервера."
         )
         # Do not auto-ban or delete a webhook solely from an event notification.
