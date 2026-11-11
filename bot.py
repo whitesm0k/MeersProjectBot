@@ -2,6 +2,7 @@ import logging
 import discord
 from discord.ext import commands
 from config import TOKEN, ROLE_UNVERIFIED_ID, ROLE_VERIFIED_ID, SPAM_LIMIT_PER_WINDOW, SPAM_WINDOW_SECONDS, OWNER_USER_IDS, OWNER_MENTION_TIMEOUT_SECONDS
+from cogs.rust_workshop import PanelView as RustPanelView, ReviewView as RustReviewView
 from cogs.tickets import TicketPanelView, TicketControls, PartnershipPanelView, SubscriptionView
 from cogs.reviews import ReviewPanel
 from cogs.vacancies import VacancyPanelView
@@ -42,6 +43,7 @@ class MeersBot(commands.Bot):
             "cogs.security_events",
             "cogs.welcome",
             "cogs.reviews",
+            "cogs.rust_workshop",
         ):
             await self.load_extension(extension)
 
@@ -54,6 +56,8 @@ class MeersBot(commands.Bot):
         self.add_view(PartnershipPanelView())
         self.add_view(SubscriptionView())
         self.add_view(ReviewPanel())
+        self.add_view(RustPanelView())
+        self.add_view(RustReviewView())
         if ROLE_UNVERIFIED_ID and ROLE_VERIFIED_ID:
             self.add_view(VerificationPanelView())
 
