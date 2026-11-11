@@ -193,7 +193,13 @@ class ModerationView(discord.ui.View):
             item['moderator_id'] = interaction.user.id
             item['decided_at'] = time.time()
             save_json(STATE_FILE, data)
-            review_bridge.update(item['id'],item['status'],published_message_id=item.get('published_message_id'))
+            if item.get('source') == 'website':
+                try:
+                    await asyncio.to_thread(review_bridge.update, item['id'], item['status'],
+                                            published_message_id=item.get('published_message_id'))
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception('Website review status sync failed for %s', item['id'])
             for child in self.children:
                 child.disabled = True
             embed = review_embed(item, approved=False)
@@ -218,7 +224,13 @@ class Reviews(commands.Cog):
 
     @tasks.loop(seconds=12)
     async def site_queue(self):
-        for row in await asyncio.to_thread(review_bridge.pending):
+        try:
+            website_rows = await asyncio.to_thread(review_bridge.pending)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('Website review polling failed')
+            return
+        for row in website_rows:
             # Only guilds with /reviews_config receive website submissions.
             for guild_id, cfg in settings().items():
                 guild=self.bot.get_guild(int(guild_id))
@@ -229,10 +241,14 @@ class Reviews(commands.Cog):
                 async with self.lock:
                     data=settings(); current=data.get(guild_id,{})
                     if row['id'] in current.get('reviews',{}):
-                        review_bridge.update(row['id'],'queued')
+                        try:
+                            await asyncio.to_thread(review_bridge.update, row['id'], 'queued')
+                        except Exception:
+                            import logging
+                            logging.getLogger(__name__).exception('Failed to mark website review queued')
                         break
                     item={'id':row['id'],'author_id':int(row['author_id']),'product':row['product'],
-                          'rating':row['rating'],'text':row['text'],'status':'pending','created_at':row['created_at']}
+                          'rating':row['rating'],'text':row['text'],'status':'pending','created_at':row['created_at'], 'source':'website'}
                     try:
                         msg=await channel.send(embed=review_embed(item),view=ModerationView(item['id']),allowed_mentions=discord.AllowedMentions.none())
                     except discord.HTTPException:
@@ -242,7 +258,11 @@ class Reviews(commands.Cog):
                     current.setdefault('last_reviews',{})[str(item['author_id'])]=item['created_at']
                     data[guild_id]=current
                     save_json(STATE_FILE,data)
-                    review_bridge.update(row['id'],'queued')
+                    try:
+                        await asyncio.to_thread(review_bridge.update, row['id'], 'queued')
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception('Failed to mark website review queued')
                     break
 
     @site_queue.before_loop
