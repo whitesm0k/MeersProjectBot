@@ -96,10 +96,21 @@ class ReviewView(discord.ui.View):
             item = data.get(str(interaction.channel.id))
             if not item or item['status'] != 'reviewing':
                 return await interaction.followup.send('Заявка не готова к публикации или уже обработана.', ephemeral=True)
-            forum_id = int(os.getenv('RUST_WORKSHOP_FORUM_CHANNEL_ID', '0') or 0)
+            # Read at action time; report missing/invalid/wrong-type IDs separately.
+            raw_id = os.getenv('RUST_WORKSHOP_FORUM_CHANNEL_ID', '').strip().strip('\"\'')
+            if not raw_id:
+                return await interaction.followup.send('Переменная RUST_WORKSHOP_FORUM_CHANNEL_ID не доступна процессу бота. Перезапустите приложение после сохранения переменных Bothost.', ephemeral=True)
+            if not raw_id.isdecimal():
+                return await interaction.followup.send('RUST_WORKSHOP_FORUM_CHANNEL_ID должен содержать только цифры Discord ID.', ephemeral=True)
+            forum_id = int(raw_id)
             forum = interaction.guild.get_channel(forum_id)
+            if forum is None:
+                try:
+                    forum = await interaction.guild.fetch_channel(forum_id)
+                except (discord.NotFound, discord.Forbidden):
+                    return await interaction.followup.send(f'Канал с ID `{forum_id}` не найден или недоступен боту. Проверьте ID и права View Channel.', ephemeral=True)
             if not isinstance(forum, discord.ForumChannel):
-                return await interaction.followup.send('Укажите RUST_WORKSHOP_FORUM_CHANNEL_ID — ID форума Discord.', ephemeral=True)
+                return await interaction.followup.send(f'Канал `{forum_id}` имеет тип `{type(forum).__name__}`, нужен именно Discord Forum Channel.', ephemeral=True)
             item['status'] = 'publishing'
             save(data)
             try:
