@@ -56,3 +56,6 @@ WELCOME_MESSAGE = os.getenv(
     "{user} — Новый пользователь!\n\n**{count}** Число пользователей сервера."
 )
 SHOW_MEMBER_COUNT = os.getenv("SHOW_MEMBER_COUNT", "true").lower() == "true"
+
+PARTNERSHIP_CATEGORY_NAME = os.getenv("PARTNERSHIP_CATEGORY_NAME", "✦ Partnerships ✦")
+PARTNERSHIP_RULES_URL = os.getenv("PARTNERSHIP_RULES_URL", "").strip()

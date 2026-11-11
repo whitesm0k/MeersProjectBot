@@ -2,11 +2,11 @@ import logging
 import discord
 from discord.ext import commands
 from config import TOKEN, ROLE_UNVERIFIED_ID, ROLE_VERIFIED_ID
-from cogs.tickets import TicketPanelView, TicketControls
+from cogs.tickets import TicketPanelView, TicketControls, PartnershipPanelView, SubscriptionView
+from cogs.reviews import ReviewPanel
 from cogs.vacancies import VacancyPanelView
 from cogs.reports import ReportPanelView, ReportVerifyView
 from cogs.verification import VerificationPanelView
-from cogs.reviews import ReviewPanel
 from security.antispam import SpamGuard
 from security.audit_guard import AuditGuard
 
@@ -47,6 +47,8 @@ class MeersBot(commands.Bot):
         self.add_view(VacancyPanelView())
         self.add_view(ReportPanelView())
         self.add_view(ReportVerifyView())
+        self.add_view(PartnershipPanelView())
+        self.add_view(SubscriptionView())
         self.add_view(ReviewPanel())
         if ROLE_UNVERIFIED_ID and ROLE_VERIFIED_ID:
             self.add_view(VerificationPanelView())

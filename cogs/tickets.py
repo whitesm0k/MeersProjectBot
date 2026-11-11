@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button
-from config import ADMIN_ROLE_ID, SUPPORT_ROLE_ID, TICKET_CATEGORY_NAME, PURCHASE_NOTIFY_USER_IDS
+from config import ADMIN_ROLE_ID, SUPPORT_ROLE_ID, TICKET_CATEGORY_NAME, PURCHASE_NOTIFY_USER_IDS, PARTNERSHIP_CATEGORY_NAME, PARTNERSHIP_RULES_URL
 from services.permissions import is_admin, is_support, is_hr
 
 def _topic_value(topic: str, key: str):
@@ -23,6 +23,109 @@ async def _notify_purchase(bot, user, channel, theme, product):
             )
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+SUBSCRIPTION_LOTS = {
+    "7 дней": "https://funpay.com/lots/offer?id=77983009",
+    "14 дней": "https://funpay.com/lots/offer?id=81805241",
+    "30 дней (выгодно)": "https://funpay.com/lots/offer?id=81805374",
+    "Lifetime": "https://funpay.com/lots/offer?id=81805500",
+}
+
+class SubscriptionSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Выберите срок подписки",
+            custom_id="meers:subscription:select",
+            options=[discord.SelectOption(label=label, value=label, emoji="💎" if label.startswith("30") else "🛒", description="Выгодный вариант" if label.startswith("30") else "Получить ссылку на оплату") for label in SUBSCRIPTION_LOTS],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        owner = _topic_value(interaction.channel.topic, "owner")
+        if str(interaction.user.id) != owner:
+            return await interaction.response.send_message("Выбирать подписку может только автор тикета.", ephemeral=True)
+        if _topic_value(interaction.channel.topic, "theme") != "Покупка":
+            return await interaction.response.send_message("Это не тикет покупки.", ephemeral=True)
+        duration = self.values[0]
+        link = SUBSCRIPTION_LOTS[duration]
+        await interaction.response.defer(ephemeral=True)
+        await interaction.channel.send(
+            f"🛍️ {interaction.user.mention}, вы выбрали **{duration}**.\n"
+            f"🔗 **Ссылка на покупку FunPay:** {link}\n\n"
+            "После оплаты сообщите об этом в тикете. Не передавайте никому пароли или коды подтверждения.",
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+        await interaction.followup.send("Ссылка на выбранную подписку отправлена в тикет.", ephemeral=True)
+
+class SubscriptionView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(SubscriptionSelect())
+
+class PartnershipModal(discord.ui.Modal, title="Заявка на сотрудничество"):
+    project = discord.ui.TextInput(label="Название проекта / команды", max_length=100, placeholder="Название вашего проекта")
+    contact = discord.ui.TextInput(label="Контакт для связи", max_length=150, placeholder="Discord / Telegram / сайт")
+    proposal = discord.ui.TextInput(label="Предложение о сотрудничестве", style=discord.TextStyle.paragraph, max_length=1200, placeholder="Расскажите о проекте и вашем предложении")
+    benefit = discord.ui.TextInput(label="Взаимная выгода", style=discord.TextStyle.paragraph, max_length=700, required=False, placeholder="Чем сотрудничество будет полезно обеим сторонам?")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild, user = interaction.guild, interaction.user
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        category = discord.utils.get(guild.categories, name=PARTNERSHIP_CATEGORY_NAME)
+        if category is None:
+            category = await guild.create_category(PARTNERSHIP_CATEGORY_NAME)
+        existing = next((c for c in category.text_channels if _topic_value(c.topic, "owner") == str(user.id) and (c.topic or "").startswith("partnership|")), None)
+        if existing:
+            return await interaction.followup.send(f"У вас уже есть заявка: {existing.mention}", ephemeral=True)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        }
+        for rid in (SUPPORT_ROLE_ID, ADMIN_ROLE_ID):
+            role = guild.get_role(rid) if rid else None
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        channel = await category.create_text_channel(
+            name=f"partner-{user.id}", overwrites=overwrites,
+            topic=f"partnership|owner={user.id}|rules_accepted=yes",
+            reason=f"Partnership application by {user.id}",
+        )
+        embed = discord.Embed(title="🤝 MEERS PROJECT | Заявка на сотрудничество", color=0x8B5CF6,
+            description=f"**Автор:** {user.mention}\n**Проект:** {self.project.value}\n**Контакт:** {self.contact.value}")
+        embed.add_field(name="📋 Предложение", value=self.proposal.value, inline=False)
+        embed.add_field(name="✨ Взаимная выгода", value=self.benefit.value or "Не указана", inline=False)
+        embed.add_field(name="📜 Правила", value="Заявитель подтвердил ознакомление и согласие.", inline=False)
+        roles = [guild.get_role(rid) for rid in (SUPPORT_ROLE_ID, ADMIN_ROLE_ID) if rid]
+        mentions = " ".join(role.mention for role in roles if role)
+        await channel.send(content=f"{mentions} Новая заявка от {user.mention}", embed=embed, view=TicketControls(),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False))
+        await interaction.followup.send(f"✅ Заявка отправлена! Ваш тикет: {channel.mention}", ephemeral=True)
+
+class PartnershipRulesView(View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.accepted = False
+
+    @discord.ui.button(label="Я ознакомился и согласен с правилами", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(PartnershipModal())
+
+class PartnershipPanelView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🤝 Подать заявку на сотрудничество", style=discord.ButtonStyle.primary, custom_id="meers:partnership:start")
+    async def start(self, interaction: discord.Interaction, button: Button):
+        embed = discord.Embed(title="📜 Правила сотрудничества MeersProject", color=0x8B5CF6,
+            description=("**Перед подачей заявки внимательно прочитайте условия:**\n\n"
+                "1. Указывайте достоверные сведения о проекте и контакты.\n"
+                "2. Опишите конкретный формат сотрудничества и взаимную пользу.\n"
+                "3. Запрещены спам, обман, реклама запрещённых услуг и повторные заявки.\n"
+                "4. Решение принимается командой MeersProject индивидуально; подача заявки не гарантирует одобрения.\n"
+                "5. Общайтесь уважительно и не публикуйте конфиденциальные данные.\n\n"
+                "**Нажимая кнопку согласия, вы подтверждаете ознакомление с этими правилами.**"))
+        if PARTNERSHIP_RULES_URL:
+            embed.add_field(name="🔗 Полные правила", value=PARTNERSHIP_RULES_URL, inline=False)
+        await interaction.response.send_message(embed=embed, view=PartnershipRulesView(), ephemeral=True)
 
 class TicketControls(View):
     def __init__(self):
@@ -144,6 +247,11 @@ class ConfirmTicketButton(Button):
         embed.set_footer(text=f"ID тикета: #{number}")
         await channel.send(embed=embed, view=TicketControls())
         if data["theme"] == "Покупка":
+            await channel.send(embed=discord.Embed(
+                title="🛒 Выберите срок подписки",
+                description="Выберите подходящий срок в меню ниже. После выбора ссылка на нужный лот FunPay появится в этом тикете.\n\n⭐ **30 дней — выгодно!**",
+                color=0x8B5CF6,
+            ), view=SubscriptionView())
             await _notify_purchase(interaction.client, user, channel, data["theme"], data["product"])
         interaction.client.ticket_sessions.pop(user.id, None)
         await interaction.response.edit_message(content=f"✅ Тикет создан: {channel.mention}", embed=None, view=None)
@@ -167,6 +275,27 @@ class Tickets(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         bot.ticket_sessions = {}
+
+    @app_commands.command(name="setup_partnership", description="Опубликовать панель заявок на сотрудничество")
+    async def setup_partnership(self, interaction: discord.Interaction):
+        if not is_admin(interaction.user):
+            return await interaction.response.send_message("Недостаточно прав.", ephemeral=True)
+        embed = discord.Embed(
+            title="✧ MEERS PROJECT | Сотрудничество",
+            description=("**Хотите стать партнёром MeersProject?**\n"
+                "Мы открыты к интересным предложениям, совместным проектам и взаимовыгодным инициативам.\n\n"
+                "✨ **Кому подойдёт:** владельцам проектов, авторам контента, сообществам и командам.\n"
+                "📝 **Что указать:** название проекта, контакт, суть предложения и взаимную выгоду.\n\n"
+                "**Как это работает**\n"
+                "Ознакомьтесь с правилами → подтвердите согласие → заполните форму → "
+                "получите приватный тикет и дождитесь ответа команды.\n\n"
+                "🔒 Заявка видна только вам и уполномоченным сотрудникам.\n"
+                "⚠️ Отправка заявки не гарантирует сотрудничество."),
+            color=0x8B5CF6,
+        )
+        embed.set_footer(text="MEERS PROJECT • Partnerships")
+        await interaction.channel.send(embed=embed, view=PartnershipPanelView())
+        await interaction.response.send_message("Панель сотрудничества опубликована.", ephemeral=True)
 
     @app_commands.command(name="setup_tickets", description="Опубликовать панель обычных тикетов")
     async def setup_tickets(self, interaction: discord.Interaction):
